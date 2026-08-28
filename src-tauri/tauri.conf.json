@@ -10,17 +10,14 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
     "windows": [
       {
         "title": "gastei-quanto",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "visible": false
       }
-    ],
-    "security": {
-      "csp": null
-    }
+    ]
   },
   "bundle": {
     "active": true,

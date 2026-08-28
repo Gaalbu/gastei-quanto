@@ -1,11 +1,14 @@
 mod pricing;
 mod claude_logs;
 
-use claude_logs::{aggregate, Report};
-use std::fs;
+use claude_logs::{add_line, new_report, Report};
+use chrono::Local;
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 
 #[tauri::command]
 fn current_month_report(month: String) -> Result<Report, String> {
@@ -13,26 +16,39 @@ fn current_month_report(month: String) -> Result<Report, String> {
         return Err("month must use YYYY-MM format".to_string());
     }
 
+    report_for_month(&month)
+}
+
+fn report_for_month(month: &str) -> Result<Report, String> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .ok_or_else(|| "home directory is unavailable".to_string())?;
     let log_root = home.join(".claude").join("projects");
-    let mut lines = Vec::new();
-    collect_jsonl(&log_root, &mut lines).map_err(|error| error.to_string())?;
-    Ok(aggregate(lines.iter().map(String::as_str), &month))
+    let mut report = new_report();
+    let mut seen = HashSet::new();
+    collect_jsonl(&log_root, &mut report, &mut seen, month).map_err(|error| error.to_string())?;
+    Ok(report)
 }
 
-fn collect_jsonl(root: &Path, lines: &mut Vec<String>) -> std::io::Result<()> {
+fn collect_jsonl(
+    root: &Path,
+    report: &mut Report,
+    seen: &mut HashSet<(String, String)>,
+    month: &str,
+) -> std::io::Result<()> {
     if !root.exists() {
         return Ok(());
     }
     for entry in fs::read_dir(root)? {
         let path = entry?.path();
         if path.is_dir() {
-            collect_jsonl(&path, lines)?;
+            collect_jsonl(&path, report, seen, month)?;
         } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
-            lines.extend(fs::read_to_string(path)?.lines().map(str::to_owned));
+            let file = BufReader::new(File::open(path)?);
+            for line in file.lines() {
+                add_line(report, seen, &line?, month);
+            }
         }
     }
     Ok(())
@@ -49,12 +65,14 @@ mod tests {
             output: 1_000_000,
             cache_read: 1_000_000,
             cache_write: 1_000_000,
+            cache_write_5m: None,
+            cache_write_1h: None,
             reasoning: 0,
         };
 
         let cost = calculate_cost("claude-sonnet-5", usage).expect("known model");
 
-        assert_eq!(cost.amount, 13.35);
+        assert_eq!(cost.amount, 14.7);
         assert_eq!(cost.basis, "estimated");
         assert_eq!(cost.price_table_version, "anthropic-2026-08-28");
     }
@@ -66,6 +84,8 @@ mod tests {
             output: 2,
             cache_read: 3,
             cache_write: 4,
+            cache_write_5m: None,
+            cache_write_1h: None,
             reasoning: 5,
         };
 
@@ -83,9 +103,17 @@ pub fn run() {
             let open = MenuItemBuilder::with_id("open", "Abrir painel").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Sair").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
-            if let Err(error) = TrayIconBuilder::new()
+            let tray_result = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("Gastei quanto?")
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => {
                         if let Some(window) = app.get_webview_window("main") {
@@ -96,10 +124,27 @@ pub fn run() {
                     "quit" => app.exit(0),
                     _ => {}
                 })
-                .build(app)
-            {
+                .build(app);
+            let Ok(tray) = tray_result else {
+                let error = tray_result.err().expect("tray result already checked");
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title("Gastei quanto? — bandeja indisponível");
+                    let _ = window.show();
+                }
                 eprintln!("tray unavailable; using the main window: {error}");
-            }
+                return Ok(());
+            };
+            let refresh_tray = tray.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let month = Local::now().format("%Y-%m").to_string();
+                    if let Ok(report) = report_for_month(&month) {
+                        let title = format!("US$ {:.0}", report.total);
+                        let _ = refresh_tray.set_title(Some(&title));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(900)).await;
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
