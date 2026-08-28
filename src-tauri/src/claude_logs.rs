@@ -35,6 +35,7 @@ pub struct Report {
     pub price_table_version: &'static str,
     pub by_model: BTreeMap<String, Breakdown>,
     pub by_project: BTreeMap<String, Breakdown>,
+    pub unpriced_models: BTreeMap<String, TokenTotals>,
 }
 
 #[derive(Debug, Default, Serialize, Clone)]
@@ -51,7 +52,7 @@ pub struct TokenTotals {
     pub cache_write: u64,
 }
 
-pub fn parse_line(line: &str, month: &str) -> Option<(String, String, Breakdown)> {
+pub fn parse_line(line: &str, month: &str) -> Option<(String, String, TokenTotals)> {
     let parsed: LogLine = serde_json::from_str(line).ok()?;
     let timestamp = parsed.timestamp.as_deref()?;
     if !timestamp.starts_with(month) {
@@ -67,19 +68,9 @@ pub fn parse_line(line: &str, month: &str) -> Option<(String, String, Breakdown)
         cache_read: usage.cache_read_input_tokens.unwrap_or_default(),
         cache_write: usage.cache_creation_input_tokens.unwrap_or_default(),
     };
-    let cost = calculate_cost(
-        &model,
-        TokenUsage {
-            input: tokens.input,
-            output: tokens.output,
-            cache_read: tokens.cache_read,
-            cache_write: tokens.cache_write,
-            reasoning: 0,
-        },
-    )?;
     let project = parsed.cwd.or(parsed.session_id).unwrap_or_else(|| "sem projeto".to_string());
 
-    Some((model, project, Breakdown { amount: cost.amount, tokens }))
+    Some((model, project, tokens))
 }
 
 pub fn aggregate<'a>(lines: impl IntoIterator<Item = &'a str>, month: &str) -> Report {
@@ -91,9 +82,23 @@ pub fn aggregate<'a>(lines: impl IntoIterator<Item = &'a str>, month: &str) -> R
     };
 
     for line in lines {
-        let Some((model, project, breakdown)) = parse_line(line, month) else {
+        let Some((model, project, tokens)) = parse_line(line, month) else {
             continue;
         };
+        let Some(cost) = calculate_cost(
+            &model,
+            TokenUsage {
+                input: tokens.input,
+                output: tokens.output,
+                cache_read: tokens.cache_read,
+                cache_write: tokens.cache_write,
+                reasoning: 0,
+            },
+        ) else {
+            add_tokens(report.unpriced_models.entry(model).or_default(), &tokens);
+            continue;
+        };
+        let breakdown = Breakdown { amount: cost.amount, tokens };
         report.total += breakdown.amount;
         add_breakdown(report.by_model.entry(model).or_default(), &breakdown);
         add_breakdown(report.by_project.entry(project).or_default(), &breakdown);
@@ -110,6 +115,13 @@ fn add_breakdown(target: &mut Breakdown, source: &Breakdown) {
     target.tokens.cache_write += source.tokens.cache_write;
 }
 
+fn add_tokens(target: &mut TokenTotals, source: &TokenTotals) {
+    target.input += source.input;
+    target.output += source.output;
+    target.cache_read += source.cache_read;
+    target.cache_write += source.cache_write;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{aggregate, parse_line};
@@ -118,9 +130,9 @@ mod tests {
 
     #[test]
     fn parses_only_matching_month_and_keeps_project() {
-        let (_, project, breakdown) = parse_line(LINE, "2026-08").expect("valid line");
+        let (_, project, tokens) = parse_line(LINE, "2026-08").expect("valid line");
         assert_eq!(project, "/work/app");
-        assert_eq!(breakdown.tokens.cache_read, 1_000_000);
+        assert_eq!(tokens.cache_read, 1_000_000);
         assert!(parse_line(LINE, "2026-07").is_none());
     }
 
@@ -135,7 +147,7 @@ mod tests {
     #[test]
     fn ignores_malformed_and_unknown_model_lines() {
         let report = aggregate(["not json", r#"{"timestamp":"2026-08-28","message":{"model":"unknown","usage":{}}}"#], "2026-08");
-        assert!(report.by_model.is_empty());
+        assert_eq!(report.unpriced_models["unknown"].input, 0);
         assert_eq!(report.total, 0.0);
     }
 }

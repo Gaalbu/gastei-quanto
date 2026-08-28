@@ -1,10 +1,39 @@
 mod pricing;
 mod claude_logs;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use claude_logs::{aggregate, Report};
+use std::fs;
+use std::path::{Path, PathBuf};
+
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+fn current_month_report(month: String) -> Result<Report, String> {
+    if month.len() != 7 || month.as_bytes().get(4) != Some(&b'-') {
+        return Err("month must use YYYY-MM format".to_string());
+    }
+
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "home directory is unavailable".to_string())?;
+    let log_root = home.join(".claude").join("projects");
+    let mut lines = Vec::new();
+    collect_jsonl(&log_root, &mut lines).map_err(|error| error.to_string())?;
+    Ok(aggregate(lines.iter().map(String::as_str), &month))
+}
+
+fn collect_jsonl(root: &Path, lines: &mut Vec<String>) -> std::io::Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_jsonl(&path, lines)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+            lines.extend(fs::read_to_string(path)?.lines().map(str::to_owned));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -47,7 +76,7 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![current_month_report])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
