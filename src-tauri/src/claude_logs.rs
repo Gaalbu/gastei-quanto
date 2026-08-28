@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 struct LogLine {
     timestamp: Option<String>,
     cwd: Option<String>,
+    #[serde(alias = "sessionId")]
     session_id: Option<String>,
+    #[serde(alias = "gitBranch")]
     git_branch: Option<String>,
     message: Option<Message>,
 }
