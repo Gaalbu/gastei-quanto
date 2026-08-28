@@ -2,14 +2,14 @@
 
 Aplicativo local de bandeja para estimar o custo de uso de APIs de modelos,
 atribuído por provedor, modelo, projeto e sessão. O MVP não lê credenciais nem
-faz requisições de rede: reprocessa os logs locais do Claude Code e marca todo
+faz requisições de rede: reprocessa os logs locais do Claude Code e do Codex e marca todo
 valor como `estimated`.
 
 ## Estado
 
 Este repositório implementa a primeira fatia vertical do plano em
 `/home/gaalbu/Documents/ideias-projetos/gastei-quanto.md`: Tauri v2, interface
-TypeScript e núcleo Rust. Codex CLI, cost APIs, orçamento e proxy ficam para
+TypeScript e núcleo Rust. Cost APIs, orçamento e proxy ficam para
 fases posteriores.
 
 ## Desenvolvimento
@@ -28,6 +28,9 @@ operacional. O CI produz artefatos para Ubuntu, Windows e macOS.
 
 - estimativa e custo faturado nunca são misturados;
 - modelos sem preço ficam visíveis e não entram no total;
+- o painel separa Claude Code e Codex por provedor;
+- os logs do Codex usam as tarifas Standard oficiais como estimativa: os
+  arquivos locais não informam modalidade, região ou autenticação;
 - a data da tabela de preços acompanha todo total exibido;
 - nenhuma credencial é lida, persistida ou enviada pela versão local.
 

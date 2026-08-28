@@ -1,5 +1,5 @@
 use crate::pricing::{calculate_cost, TokenUsage};
-use chrono::{DateTime, Local, FixedOffset};
+use chrono::{DateTime, FixedOffset, Local};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
@@ -46,6 +46,7 @@ pub struct Report {
     pub by_model: BTreeMap<String, Breakdown>,
     pub by_project: BTreeMap<String, Breakdown>,
     pub unpriced_models: BTreeMap<String, TokenTotals>,
+    pub by_provider: BTreeMap<String, Breakdown>,
 }
 
 pub(crate) fn new_report() -> Report {
@@ -111,11 +112,14 @@ fn parse_event(line: &str, month: &str) -> Option<ParsedEvent> {
                 && cache.ephemeral_1h_input_tokens.is_some()
                 && cache.ephemeral_5m_input_tokens.unwrap_or_default()
                     + cache.ephemeral_1h_input_tokens.unwrap_or_default()
-                    == total => (
-                        cache.ephemeral_5m_input_tokens,
-                        cache.ephemeral_1h_input_tokens,
-                        true,
-                    ),
+                    == total =>
+        {
+            (
+                cache.ephemeral_5m_input_tokens,
+                cache.ephemeral_1h_input_tokens,
+                true,
+            )
+        }
         _ => (None, None, false),
     };
     Some(ParsedEvent {
@@ -152,27 +156,47 @@ pub(crate) fn add_line(
     line: &str,
     month: &str,
 ) {
-    let Some(event) = parse_event(line, month) else { return };
+    let Some(event) = parse_event(line, month) else {
+        return;
+    };
     if let Some(key) = &event.dedup_key {
-        if !seen.insert(key.clone()) { return; }
+        if !seen.insert(key.clone()) {
+            return;
+        }
     }
     let usage = TokenUsage {
         input: event.tokens.input,
         output: event.tokens.output,
         cache_read: event.tokens.cache_read,
         cache_write: event.tokens.cache_write,
-            cache_write_5m: event.cache_split.then_some(event.tokens.cache_write_5m),
-            cache_write_1h: event.cache_split.then_some(event.tokens.cache_write_1h),
+        cache_write_5m: event.cache_split.then_some(event.tokens.cache_write_5m),
+        cache_write_1h: event.cache_split.then_some(event.tokens.cache_write_1h),
         reasoning: 0,
     };
     let Some(cost) = calculate_cost(&event.model, usage) else {
-        add_tokens(report.unpriced_models.entry(event.model).or_default(), &event.tokens);
+        add_tokens(
+            report.unpriced_models.entry(event.model).or_default(),
+            &event.tokens,
+        );
         return;
     };
-    let breakdown = Breakdown { amount: cost.amount, tokens: event.tokens };
+    let breakdown = Breakdown {
+        amount: cost.amount,
+        tokens: event.tokens,
+    };
     report.total += breakdown.amount;
     add_breakdown(report.by_model.entry(event.model).or_default(), &breakdown);
-    add_breakdown(report.by_project.entry(event.project).or_default(), &breakdown);
+    add_breakdown(
+        report.by_project.entry(event.project).or_default(),
+        &breakdown,
+    );
+    add_breakdown(
+        report
+            .by_provider
+            .entry("Claude Code".to_string())
+            .or_default(),
+        &breakdown,
+    );
 }
 
 fn add_breakdown(target: &mut Breakdown, source: &Breakdown) {
@@ -210,8 +234,14 @@ mod tests {
     #[test]
     fn prices_one_hour_and_five_minute_cache_separately() {
         let report = aggregate(FIXTURE.lines().skip(6).take(1), "2026-08");
-        assert_eq!(report.by_model["claude-sonnet-5"].tokens.cache_write_5m, 1_000_000);
-        assert_eq!(report.by_model["claude-sonnet-5"].tokens.cache_write_1h, 1_000_000);
+        assert_eq!(
+            report.by_model["claude-sonnet-5"].tokens.cache_write_5m,
+            1_000_000
+        );
+        assert_eq!(
+            report.by_model["claude-sonnet-5"].tokens.cache_write_1h,
+            1_000_000
+        );
         assert_eq!(report.by_model["claude-sonnet-5"].amount, 6.5);
     }
 

@@ -1,8 +1,9 @@
-mod pricing;
 mod claude_logs;
+mod codex_logs;
+mod pricing;
 
-use claude_logs::{add_line, new_report, Report};
 use chrono::Local;
+use claude_logs::{add_line, new_report, Report};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -26,9 +27,12 @@ fn report_for_month(month: &str) -> Result<Report, String> {
         .map(PathBuf::from)
         .ok_or_else(|| "home directory is unavailable".to_string())?;
     let log_root = home.join(".claude").join("projects");
+    let codex_root = home.join(".codex").join("sessions");
     let mut report = new_report();
     let mut seen = HashSet::new();
     collect_jsonl(&log_root, &mut report, &mut seen, month).map_err(|error| error.to_string())?;
+    codex_logs::collect_jsonl(&codex_root, &mut report, month)
+        .map_err(|error| error.to_string())?;
     Ok(report)
 }
 
@@ -57,7 +61,7 @@ fn collect_jsonl(
 
 #[cfg(test)]
 mod tests {
-    use super::pricing::{anthropic_price, calculate_cost, TokenUsage};
+    use super::pricing::{anthropic_price, calculate_cost, openai_price, TokenUsage};
 
     #[test]
     fn calculates_input_output_and_cache_at_separate_rates() {
@@ -93,6 +97,23 @@ mod tests {
         assert!(anthropic_price("a-model-not-in-the-table").is_none());
         assert!(calculate_cost("a-model-not-in-the-table", usage).is_none());
     }
+
+    #[test]
+    fn prices_openai_cached_and_output_tokens() {
+        let cost = calculate_cost(
+            "gpt-5.6-luna",
+            TokenUsage {
+                input: 1_000_000,
+                output: 1_000_000,
+                cache_read: 1_000_000,
+                cache_write: 1_000_000,
+                ..TokenUsage::default()
+            },
+        )
+        .expect("known OpenAI model");
+        assert_eq!(cost.amount, 1.67);
+        assert!(openai_price("gpt-reserve").is_none());
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -108,7 +129,11 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("Gastei quanto?")
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, .. } = event {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        ..
+                    } = event
+                    {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
