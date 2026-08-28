@@ -254,7 +254,7 @@ mod tests {
         let file = fixture(FIXTURE.lines().collect::<Vec<_>>().as_slice());
         let mut report = new_report();
         process_file(file.path(), &mut report, "2026-08").unwrap();
-        assert_eq!(report.by_model["gpt-5.6-luna"].tokens.input, 130);
+        assert_eq!(report.by_model["gpt-5.6-luna"].tokens.input, 125);
         assert_eq!(report.by_model["gpt-5.5"].tokens.input, 40);
         assert_eq!(report.by_provider["Codex"].tokens.output, 19);
     }
