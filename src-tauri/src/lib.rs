@@ -4,6 +4,8 @@ mod claude_logs;
 use claude_logs::{aggregate, Report};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
 
 #[tauri::command]
 fn current_month_report(month: String) -> Result<Report, String> {
@@ -77,6 +79,29 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![current_month_report])
+        .setup(|app| {
+            let open = MenuItemBuilder::with_id("open", "Abrir painel").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Sair").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+            if let Err(error) = TrayIconBuilder::new()
+                .menu(&menu)
+                .tooltip("Gastei quanto?")
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)
+            {
+                eprintln!("tray unavailable; using the main window: {error}");
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
