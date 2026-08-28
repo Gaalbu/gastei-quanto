@@ -61,8 +61,7 @@ pub(crate) fn collect_jsonl(root: &Path, report: &mut Report, month: &str) -> io
 }
 
 fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()> {
-    let mut turn: Option<String> = None;
-    let mut model = String::new();
+    let mut model: Option<String> = None;
     let mut project = "sem projeto".to_string();
     let mut seen: HashSet<Usage> = HashSet::new();
     for line in BufReader::new(File::open(path)?).lines() {
@@ -76,8 +75,10 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
         if event.r#type.as_deref() == Some("turn_context")
             || payload.r#type.as_deref() == Some("turn_context")
         {
-            turn = payload.turn_id;
-            model = payload.model.unwrap_or_default();
+            if payload.turn_id.is_none() {
+                continue;
+            }
+            model = payload.model;
             project = payload.cwd.unwrap_or_else(|| "sem projeto".to_string());
             seen.clear();
             continue;
@@ -90,6 +91,9 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
         }
         let Some(info) = payload.info else { continue };
         let Some(last) = info.last_token_usage else {
+            continue;
+        };
+        let Some(model) = model.as_deref() else {
             continue;
         };
         let fingerprint = info.total_token_usage.unwrap_or_else(|| last.clone());
@@ -113,8 +117,8 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
             cache_write: tokens.cache_write,
             ..TokenUsage::default()
         };
-        let Some(cost) = calculate_cost(&model, usage) else {
-            add_unpriced(report, &model, &tokens);
+        let Some(cost) = calculate_cost(model, usage) else {
+            add_unpriced(report, model, &tokens);
             continue;
         };
         let breakdown = Breakdown {
@@ -124,7 +128,7 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
         report.total += cost.amount;
         report
             .by_model
-            .entry(model.clone())
+            .entry(model.to_string())
             .or_default()
             .add(&breakdown);
         report
@@ -138,7 +142,6 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
             .or_default()
             .add(&breakdown);
     }
-    let _ = turn;
     Ok(())
 }
 
@@ -201,5 +204,46 @@ mod tests {
         process_file(file.path(), &mut report, "2026-08").unwrap();
         assert_eq!(report.unpriced_models["gpt-reserve"].input, 5);
         assert_eq!(report.total, 0.0);
+    }
+
+    #[test]
+    fn ignores_events_without_turn_context_or_valid_info() {
+        let file = fixture(&[
+            r#"{"type":"event_msg","timestamp":"2026-08-28T12:00:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"output_tokens":2}}}}"#,
+            r#"{"type":"turn_context","payload":{"type":"turn_context","turn_id":"t1","model":"gpt-5.6-luna","cwd":"/work"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-28T12:01:00Z","payload":{"type":"token_count","info":null}}"#,
+        ]);
+        let mut report = new_report();
+        process_file(file.path(), &mut report, "2026-08").unwrap();
+        assert!(report.by_model.is_empty());
+    }
+
+    #[test]
+    fn resets_deduplication_when_turn_changes() {
+        let file = fixture(&[
+            r#"{"type":"turn_context","payload":{"type":"turn_context","turn_id":"t1","model":"gpt-5.6-luna","cwd":"/one"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-28T12:00:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+            r#"{"type":"turn_context","payload":{"type":"turn_context","turn_id":"t2","model":"gpt-5.6-luna","cwd":"/two"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-28T12:01:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+        ]);
+        let mut report = new_report();
+        process_file(file.path(), &mut report, "2026-08").unwrap();
+        assert_eq!(report.by_model["gpt-5.6-luna"].tokens.input, 200);
+        assert_eq!(report.by_project["/one"].tokens.input, 100);
+        assert_eq!(report.by_project["/two"].tokens.input, 100);
+    }
+
+    #[test]
+    fn subtracts_cached_and_cache_write_input_saturating() {
+        let file = fixture(&[
+            r#"{"type":"turn_context","payload":{"type":"turn_context","turn_id":"t1","model":"gpt-5.6-luna","cwd":"/work"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-28T12:00:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"cached_input_tokens":8,"cache_write_input_tokens":4,"output_tokens":2}}}}"#,
+        ]);
+        let mut report = new_report();
+        process_file(file.path(), &mut report, "2026-08").unwrap();
+        let tokens = &report.by_model["gpt-5.6-luna"].tokens;
+        assert_eq!(tokens.input, 0);
+        assert_eq!(tokens.cache_read, 8);
+        assert_eq!(tokens.cache_write, 4);
     }
 }
