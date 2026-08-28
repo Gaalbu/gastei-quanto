@@ -1,7 +1,13 @@
 - [x] Criar repositório Tauri v2 e documentação inicial
-- [ ] Implementar contrato, preços e cálculo Anthropic com testes
-- [ ] Implementar parser de logs Claude Code com fixtures
-- [ ] Expor relatório JSON pelo núcleo Rust
-- [ ] Construir painel TypeScript
-- [ ] Integrar bandeja e fallback de janela
-- [ ] Adicionar CI e validar instaladores nos três sistemas
+- [x] Implementar contrato, preços e cálculo Anthropic com testes
+- [x] Implementar parser de logs Claude Code com fixtures
+- [x] Expor relatório JSON pelo núcleo Rust
+- [x] Construir painel TypeScript
+- [x] Integrar bandeja e fallback de janela
+- [x] Adicionar CI e validar instaladores nos três sistemas
+- [ ] Extrair relatório compartilhado e quebra por provedor
+- [ ] Implementar preços OpenAI e testes de cache/contexto
+- [ ] Implementar parser Codex em streaming com fixtures de turno
+- [ ] Integrar Claude e Codex no núcleo, bandeja e painel existente
+- [ ] Documentar limitações e validar testes/build
+- [ ] Revisar qualidade, commitar por etapa, enviar e aguardar CI verde
