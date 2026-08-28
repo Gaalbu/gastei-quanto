@@ -114,6 +114,20 @@ mod tests {
         assert_eq!(cost.amount, 1.67);
         assert!(openai_price("gpt-reserve").is_none());
     }
+
+    #[test]
+    fn exposes_all_supported_openai_standard_models() {
+        for model in [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+        ] {
+            assert!(openai_price(model).is_some(), "missing price for {model}");
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
