@@ -53,7 +53,7 @@ pub(crate) fn new_report() -> Report {
     Report {
         currency: "USD",
         basis: "estimated",
-        price_table_version: "anthropic-2026-08-28",
+        price_table_version: "2026-08-28",
         ..Report::default()
     }
 }
@@ -83,10 +83,13 @@ struct ParsedEvent {
 }
 
 fn is_in_local_month(timestamp: &str, month: &str) -> bool {
-    let Ok(parsed) = timestamp.parse::<DateTime<FixedOffset>>() else {
-        return false;
-    };
-    parsed.with_timezone(&Local).format("%Y-%m").to_string() == month
+    match timestamp.parse::<DateTime<FixedOffset>>() {
+        Ok(parsed) => parsed.with_timezone(&Local).format("%Y-%m").to_string() == month,
+        Err(err) => {
+            eprintln!("Invalid timestamp in Claude log: {} ({})", timestamp, err);
+            false
+        }
+    }
 }
 
 fn parse_event(line: &str, month: &str) -> Option<ParsedEvent> {

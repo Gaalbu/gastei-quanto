@@ -34,6 +34,25 @@ operacional. O CI produz artefatos para Ubuntu, Windows e macOS.
 - a data da tabela de preços acompanha todo total exibido;
 - nenhuma credencial é lida, persistida ou enviada pela versão local.
 
+## Arquitetura
+
+Ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) para pipeline Collect→Parse→Deduplicate→Price→Report, schema de logs e detalhes de tray.
+
+## Tabela de preços
+
+`src-tauri/pricing-tables.json` (versionada por data). Para atualizar: edite o JSON, rode `cargo test` (valida `14.70` para 4M tokens e fixtures), e versione com git. O binário embute o arquivo via `include_str!`.
+
+## Troubleshooting
+
+- Pastas `~/.claude/projects` ou `~/.codex/sessions` ausentes: o app retorna total 0 sem erro.
+- Timestamp inválido: logado em stderr e evento ignorado.
+- Modelo sem preço: aparece em "Sem preço" com contagem de tokens, fora do total.
+
+## Roadmap
+
+Fase 1 (este MVP): logs locais, estimativa, bandeja.
+Fase 2: Cost APIs reais, orçamento, proxy opcional.
+
 ## Licença
 
-A definir antes da primeira distribuição pública.
+Este projeto está licenciado sob a [MIT License](LICENSE).

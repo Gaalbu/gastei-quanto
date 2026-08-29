@@ -128,6 +128,34 @@ mod tests {
             assert!(openai_price(model).is_some(), "missing price for {model}");
         }
     }
+
+    #[test]
+    fn full_integration_both_providers() {
+        use crate::claude_logs::aggregate;
+
+        let claude_fixture = include_str!("../tests/fixtures/claude_usage.jsonl");
+        let codex_fixture = include_str!("../tests/fixtures/codex_usage.jsonl");
+
+        let mut report = aggregate(claude_fixture.lines(), "2026-08");
+        let before_total = report.total;
+        assert!(report.by_provider.contains_key("Claude Code"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        std::fs::write(&path, codex_fixture).unwrap();
+        crate::codex_logs::collect_jsonl(dir.path(), &mut report, "2026-08").unwrap();
+
+        assert!(report.by_provider.contains_key("Claude Code"));
+        assert!(report.by_provider.contains_key("Codex"));
+        assert!(report.total > before_total);
+        assert_eq!(report.by_provider.len(), 2);
+    }
+
+    #[test]
+    fn report_uses_neutral_table_date_for_openai_only_usage() {
+        let report = crate::claude_logs::new_report();
+        assert_eq!(report.price_table_version, "2026-08-28");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -178,9 +206,14 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 loop {
                     let month = Local::now().format("%Y-%m").to_string();
-                    if let Ok(report) = report_for_month(&month) {
-                        let title = format!("US$ {:.0}", report.total);
-                        let _ = refresh_tray.set_title(Some(&title));
+                    match report_for_month(&month) {
+                        Ok(report) => {
+                            let title = format!("US$ {:.0}", report.total);
+                            if let Err(err) = refresh_tray.set_title(Some(&title)) {
+                                eprintln!("Failed to update tray title: {}", err);
+                            }
+                        }
+                        Err(err) => eprintln!("Failed to compute tray report: {}", err),
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(900)).await;
                 }

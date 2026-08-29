@@ -1,4 +1,6 @@
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TokenUsage {
@@ -28,47 +30,61 @@ pub struct ModelPrice {
     pub cache_write_1h_multiplier: f64,
 }
 
+// Pricing tables are versioned and stored in `pricing-tables.json`.
+// Updating prices: edit the JSON and run `cargo test` to validate totals.
+// History is tracked via git; keep version keys as YYYY-MM-DD.
+const PRICING_TABLES_JSON: &str = include_str!("../pricing-tables.json");
+
+#[derive(serde::Deserialize)]
+struct AnthropicEntry {
+    input_per_million: f64,
+    output_per_million: f64,
+    cache_read_multiplier: f64,
+    cache_write_multiplier: f64,
+    cache_write_1h_multiplier: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiEntry {
+    input_per_million: f64,
+    output_per_million: f64,
+    cached_per_million: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct PricingTables {
+    #[serde(rename = "anthropic-2026-08-28")]
+    anthropic: HashMap<String, AnthropicEntry>,
+    #[serde(rename = "openai-2026-08-28")]
+    openai: HashMap<String, OpenAiEntry>,
+}
+
+fn tables() -> &'static PricingTables {
+    static TABLES: OnceLock<PricingTables> = OnceLock::new();
+    TABLES.get_or_init(|| {
+        serde_json::from_str(PRICING_TABLES_JSON).expect("pricing-tables.json must be valid")
+    })
+}
+
 pub fn anthropic_price(model: &str) -> Option<ModelPrice> {
-    match model {
-        "claude-opus-5" => Some(ModelPrice {
-            input_per_million: 5.0,
-            output_per_million: 25.0,
-            cache_read_multiplier: 0.10,
-            cache_write_multiplier: 1.25,
-            cache_write_1h_multiplier: 2.0,
-        }),
-        "claude-sonnet-5" => Some(ModelPrice {
-            input_per_million: 2.0,
-            output_per_million: 10.0,
-            cache_read_multiplier: 0.10,
-            cache_write_multiplier: 1.25,
-            cache_write_1h_multiplier: 2.0,
-        }),
-        "claude-haiku-4-5" => Some(ModelPrice {
-            input_per_million: 1.0,
-            output_per_million: 5.0,
-            cache_read_multiplier: 0.10,
-            cache_write_multiplier: 1.25,
-            cache_write_1h_multiplier: 2.0,
-        }),
-        _ => None,
-    }
+    let entry = tables().anthropic.get(model)?;
+    Some(ModelPrice {
+        input_per_million: entry.input_per_million,
+        output_per_million: entry.output_per_million,
+        cache_read_multiplier: entry.cache_read_multiplier,
+        cache_write_multiplier: entry.cache_write_multiplier,
+        cache_write_1h_multiplier: entry.cache_write_1h_multiplier,
+    })
 }
 
 pub fn openai_price(model: &str) -> Option<ModelPrice> {
-    let (input, cached, output) = match model {
-        "gpt-5.6-sol" => (4.0, 0.40, 20.0),
-        "gpt-5.6-terra" => (2.0, 0.20, 12.0),
-        "gpt-5.6-luna" => (0.20, 0.02, 1.20),
-        "gpt-5.5" => (5.0, 0.50, 30.0),
-        "gpt-5.4" => (2.50, 0.25, 15.0),
-        "gpt-5.4-mini" => (0.75, 0.075, 4.50),
-        _ => return None,
-    };
+    let entry = tables().openai.get(model)?;
     Some(ModelPrice {
-        input_per_million: input,
-        output_per_million: output,
-        cache_read_multiplier: cached / input,
+        input_per_million: entry.input_per_million,
+        output_per_million: entry.output_per_million,
+        // OpenAI: unified cache, price = input * (cached / input)
+        cache_read_multiplier: entry.cached_per_million / entry.input_per_million,
+        // OpenAI has no split cache durations; use 5m multiplier for unified write
         cache_write_multiplier: 1.25,
         cache_write_1h_multiplier: 1.25,
     })

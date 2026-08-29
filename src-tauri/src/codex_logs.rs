@@ -39,10 +39,13 @@ struct Usage {
 }
 
 fn local_month(value: &str, month: &str) -> bool {
-    value
-        .parse::<DateTime<FixedOffset>>()
-        .map(|v| v.with_timezone(&Local).format("%Y-%m").to_string() == month)
-        .unwrap_or(false)
+    match value.parse::<DateTime<FixedOffset>>() {
+        Ok(parsed) => parsed.with_timezone(&Local).format("%Y-%m").to_string() == month,
+        Err(err) => {
+            eprintln!("Invalid timestamp in Codex log: {} ({})", value, err);
+            false
+        }
+    }
 }
 
 pub(crate) fn collect_jsonl(root: &Path, report: &mut Report, month: &str) -> io::Result<()> {
@@ -60,45 +63,56 @@ pub(crate) fn collect_jsonl(root: &Path, report: &mut Report, month: &str) -> io
     Ok(())
 }
 
-fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()> {
-    let mut model: Option<String> = None;
-    let mut project = "sem projeto".to_string();
-    let mut seen: HashSet<Usage> = HashSet::new();
-    for line in BufReader::new(File::open(path)?).lines() {
-        let Ok(line) = line else { continue };
-        let Ok(event) = serde_json::from_str::<Line>(&line) else {
-            continue;
-        };
-        let Some(payload) = event.payload else {
-            continue;
-        };
-        if event.r#type.as_deref() == Some("turn_context")
-            || payload.r#type.as_deref() == Some("turn_context")
-        {
-            if payload.turn_id.is_none() {
-                continue;
-            }
-            model = payload.model;
-            project = payload.cwd.unwrap_or_else(|| "sem projeto".to_string());
-            seen.clear();
-            continue;
+/// Stateful parser for Codex JSONL sessions.
+/// Isolates mutable `model / project / dedup` state so logic is testable.
+struct CodexParser {
+    model: Option<String>,
+    project: String,
+    seen: HashSet<Usage>,
+}
+
+impl CodexParser {
+    fn new() -> Self {
+        Self {
+            model: None,
+            project: "sem projeto".to_string(),
+            seen: HashSet::new(),
         }
+    }
+
+    fn handle_turn_context(&mut self, payload: Payload) {
+        if payload.turn_id.is_none() {
+            return;
+        }
+        self.model = payload.model;
+        self.project = payload.cwd.unwrap_or_else(|| "sem projeto".to_string());
+        self.seen.clear();
+    }
+
+    fn handle_token_count(
+        &mut self,
+        event: &Line,
+        payload: Payload,
+        report: &mut Report,
+        month: &str,
+    ) {
         if event.r#type.as_deref() != Some("event_msg")
             || payload.r#type.as_deref() != Some("token_count")
             || !local_month(event.timestamp.as_deref().unwrap_or(""), month)
         {
-            continue;
+            return;
         }
-        let Some(info) = payload.info else { continue };
+        let Some(info) = payload.info else { return };
         let Some(last) = info.last_token_usage else {
-            continue;
+            return;
         };
-        let Some(model) = model.as_deref() else {
-            continue;
+        let Some(model) = self.model.as_deref() else {
+            return;
         };
+
         let fingerprint = info.total_token_usage.unwrap_or_else(|| last.clone());
-        if !seen.insert(fingerprint) {
-            continue;
+        if !self.seen.insert(fingerprint) {
+            return;
         }
         let tokens = TokenTotals {
             input: last
@@ -119,7 +133,7 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
         };
         let Some(cost) = calculate_cost(model, usage) else {
             add_unpriced(report, model, &tokens);
-            continue;
+            return;
         };
         let breakdown = Breakdown {
             amount: cost.amount,
@@ -133,7 +147,7 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
             .add(&breakdown);
         report
             .by_project
-            .entry(project.clone())
+            .entry(self.project.clone())
             .or_default()
             .add(&breakdown);
         report
@@ -141,6 +155,30 @@ fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()>
             .entry("Codex".to_string())
             .or_default()
             .add(&breakdown);
+    }
+
+    fn handle_line(&mut self, line: &str, report: &mut Report, month: &str) {
+        let Ok(event) = serde_json::from_str::<Line>(line) else {
+            return;
+        };
+        let Some(payload) = event.payload else { return };
+
+        let is_turn_context = event.r#type.as_deref() == Some("turn_context")
+            || payload.r#type.as_deref() == Some("turn_context");
+
+        if is_turn_context {
+            self.handle_turn_context(payload);
+            return;
+        }
+        self.handle_token_count(&event, payload, report, month);
+    }
+}
+
+fn process_file(path: &Path, report: &mut Report, month: &str) -> io::Result<()> {
+    let mut parser = CodexParser::new();
+    for line in BufReader::new(File::open(path)?).lines() {
+        let Ok(line) = line else { continue };
+        parser.handle_line(&line, report, month);
     }
     Ok(())
 }
@@ -257,5 +295,16 @@ mod tests {
         assert_eq!(report.by_model["gpt-5.6-luna"].tokens.input, 125);
         assert_eq!(report.by_model["gpt-5.5"].tokens.input, 40);
         assert_eq!(report.by_provider["Codex"].tokens.output, 19);
+    }
+
+    #[test]
+    fn ignores_invalid_timestamp_without_creating_usage() {
+        let file = fixture(&[
+            r#"{"type":"turn_context","payload":{"type":"turn_context","turn_id":"t1","model":"gpt-5.6-luna","cwd":"/work"}}"#,
+            r#"{"type":"event_msg","timestamp":"not-a-timestamp","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+        ]);
+        let mut report = new_report();
+        process_file(file.path(), &mut report, "2026-08").unwrap();
+        assert!(report.by_model.is_empty());
     }
 }
